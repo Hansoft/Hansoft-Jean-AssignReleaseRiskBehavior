@@ -20,9 +20,12 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
         Project project;
         bool changeImpact = false;
         string pointsOrDays;
-        string parentName;
-        double factor;
+        string findQuery;
+        double lowRiskLimit;
+        double highRiskLimit;
         string[] riskValue;
+        bool elevateBlockedItems;
+        bool considerRiskColumn;
         HPMProjectCustomColumnsColumn trackingColumn;
         string title;
 
@@ -32,13 +35,16 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
             projectName = GetParameter("HansoftProject");
             trackingColumnName = GetParameter("TrackingColumn");
             pointsOrDays = GetParameter("PointsOrDays");
-            parentName = GetParameter("ParentName");
-            factor = double.Parse(GetParameter("Factor"));
+            findQuery = GetParameter("Find");
+            lowRiskLimit = double.Parse(GetParameter("LowRiskLimit"));
+            highRiskLimit = double.Parse(GetParameter("HighRiskLimit"));
             string riskValues = GetParameter("RiskValues");
             riskValue = riskValues.Split(',');
             for (int i = 0; i < riskValue.Length; i += 1)
                 riskValue[i] = riskValue[i].Trim();
             title = "AssignReleaseRiskBehavior: " + configuration.InnerText;
+            elevateBlockedItems = GetParameter("ElevateBlockedItems").Equals("Yes");
+            considerRiskColumn = GetParameter("ConsiderRiskColumn").Equals("Yes");
         }
 
         public override void Initialize()
@@ -59,27 +65,50 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
 
         private void DoUpdate()
         {
+            List<Task> releases = project.Schedule.Find(findQuery);
             DateTime start = DateTime.Now;
-            foreach (Release release in project.Releases.FindAll(r=>r.Parent.Name==parentName))
+            foreach (Release release in releases)
             {
                 List<ProductBacklogItem>[] remainingItemsByReleaseRisk;
                 List<ProductBacklogItem> completedItems = release.CompletedItems;
                 if (pointsOrDays.Equals("Points"))
-                    remainingItemsByReleaseRisk = release.GetRemainingItemsByRiskPoints(factor);
+                    remainingItemsByReleaseRisk = release.GetRemainingItemsByRiskPoints(lowRiskLimit, highRiskLimit);
                 else
-                    remainingItemsByReleaseRisk = release.GetRemainingItemsByRiskEstimatedDays(factor);
+                    remainingItemsByReleaseRisk = release.GetRemainingItemsByRiskEstimatedDays(lowRiskLimit, highRiskLimit);
 
-                AssignReleaseRisk(completedItems, riskValue[0]);
-                AssignReleaseRisk(remainingItemsByReleaseRisk[0], riskValue[1]);
-                AssignReleaseRisk(remainingItemsByReleaseRisk[1], riskValue[2]);
-                AssignReleaseRisk(remainingItemsByReleaseRisk[2], riskValue[3]);
+                AssignReleaseRisk(completedItems, riskValue, 0);
+                AssignReleaseRisk(remainingItemsByReleaseRisk[0], riskValue, 1);
+                AssignReleaseRisk(remainingItemsByReleaseRisk[1], riskValue, 2);
+                AssignReleaseRisk(remainingItemsByReleaseRisk[2], riskValue, 3);
             }
         }
 
-        private void AssignReleaseRisk(List<ProductBacklogItem> items, string value)
+        private void AssignReleaseRisk(List<ProductBacklogItem> items, string[] riskValue, int index)
         {
             foreach (ProductBacklogItem item in items)
-                item.SetCustomColumnValue(trackingColumn, value);
+            {
+                if (index != 0)
+                {
+                    if ((EHPMTaskStatus)item.AggregatedStatus.Value == EHPMTaskStatus.Blocked && elevateBlockedItems)
+                    {
+                        item.SetCustomColumnValue(trackingColumn, riskValue[3]);
+                    }
+                    else
+                    {
+                        int iind = index;
+                        if (considerRiskColumn)
+                        {
+                            if ((EHPMTaskRisk)item.Risk.Value == EHPMTaskRisk.High)
+                                iind = 3;
+                            else if ((EHPMTaskRisk)item.Risk.Value == EHPMTaskRisk.Medium)
+                                iind = Math.Max(2, index);
+                        }
+                        item.SetCustomColumnValue(trackingColumn, riskValue[iind]);
+                    }
+                }
+                else
+                    item.SetCustomColumnValue(trackingColumn, riskValue[index]);
+            }
         }
 
         public override void OnBeginProcessBufferedEvents(EventArgs e)
