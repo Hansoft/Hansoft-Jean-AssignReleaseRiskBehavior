@@ -17,8 +17,10 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
  {
         string projectName;
         string trackingColumnName;
-        Project project;
+        List<Project> projects;
+        bool inverted;
         bool changeImpact = false;
+        bool initializationOK = false;
         string pointsOrDays;
         string findQuery;
         double lowRiskLimit;
@@ -33,6 +35,10 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
             : base(configuration)
         {
             projectName = GetParameter("HansoftProject");
+            string invert = GetParameter("InvertedMatch");
+            if (invert != null)
+                inverted = invert.ToLower().Equals("yes");
+
             trackingColumnName = GetParameter("TrackingColumn");
             pointsOrDays = GetParameter("PointsOrDays");
             findQuery = GetParameter("Find");
@@ -49,12 +55,14 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
 
         public override void Initialize()
         {
-            project = HPMUtilities.FindProject(projectName);
-            if (project == null)
-                throw new ArgumentException("Could not find project:" + projectName);
-            trackingColumn = project.ProductBacklog.GetCustomColumn(trackingColumnName);
+            initializationOK = false;
+            projects = HPMUtilities.FindProjects(projectName, inverted);
+            if (projects.Count == 0)
+                throw new ArgumentException("Could not find any matching project:" + projectName);
+            trackingColumn = projects[0].ProductBacklog.GetCustomColumn(trackingColumnName);
             if (trackingColumn == null)
                 throw new ArgumentException("Could not find custom column in product backlog:" + trackingColumnName);
+            initializationOK = true;
             DoUpdate();
         }
 
@@ -65,25 +73,34 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
 
         private void DoUpdate()
         {
-            List<Task> releases = project.Schedule.Find(findQuery);
-            DateTime start = DateTime.Now;
-            foreach (Release release in releases)
+            if (initializationOK)
             {
-                List<ProductBacklogItem>[] remainingItemsByReleaseRisk;
-                List<ProductBacklogItem> completedItems = release.CompletedItems;
-                if (pointsOrDays.Equals("Points"))
-                    remainingItemsByReleaseRisk = release.GetRemainingItemsByRiskPoints(lowRiskLimit, highRiskLimit);
-                else
-                    remainingItemsByReleaseRisk = release.GetRemainingItemsByRiskEstimatedDays(lowRiskLimit, highRiskLimit);
+                foreach (Project project in projects)
+                {
+                    List<Task> releases = project.Schedule.Find(findQuery);
+                    DateTime start = DateTime.Now;
+                    foreach (Release release in releases)
+                    {
+                        List<ProductBacklogItem>[] remainingItemsByReleaseRisk;
+                        List<ProductBacklogItem> completedItems = release.CompletedItems;
+                        if (pointsOrDays.Equals("Points"))
+                            remainingItemsByReleaseRisk = release.GetRemainingItemsByRiskPoints(lowRiskLimit, highRiskLimit);
+                        else
+                            remainingItemsByReleaseRisk = release.GetRemainingItemsByRiskEstimatedDays(lowRiskLimit, highRiskLimit);
 
-                AssignReleaseRisk(completedItems, riskValue, 0);
-                AssignReleaseRisk(remainingItemsByReleaseRisk[0], riskValue, 1);
-                AssignReleaseRisk(remainingItemsByReleaseRisk[1], riskValue, 2);
-                AssignReleaseRisk(remainingItemsByReleaseRisk[2], riskValue, 3);
+                        // Get the column in the actual project
+                        HPMProjectCustomColumnsColumn actualCustomColumn = project.ProductBacklog.GetCustomColumn(trackingColumn.m_Name);
+
+                        AssignReleaseRisk(completedItems, riskValue, 0, actualCustomColumn);
+                        AssignReleaseRisk(remainingItemsByReleaseRisk[0], riskValue, 1, actualCustomColumn);
+                        AssignReleaseRisk(remainingItemsByReleaseRisk[1], riskValue, 2, actualCustomColumn);
+                        AssignReleaseRisk(remainingItemsByReleaseRisk[2], riskValue, 3, actualCustomColumn);
+                    }
+                }
             }
         }
 
-        private void AssignReleaseRisk(List<ProductBacklogItem> items, string[] riskValue, int index)
+        private void AssignReleaseRisk(List<ProductBacklogItem> items, string[] riskValue, int index, HPMProjectCustomColumnsColumn actualTrackingColumn)
         {
             foreach (ProductBacklogItem item in items)
             {
@@ -91,7 +108,7 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
                 {
                     if ((EHPMTaskStatus)item.AggregatedStatus.Value == EHPMTaskStatus.Blocked && elevateBlockedItems)
                     {
-                        item.SetCustomColumnValue(trackingColumn, riskValue[3]);
+                        item.SetCustomColumnValue(actualTrackingColumn, riskValue[3]);
                     }
                     else
                     {
@@ -103,11 +120,11 @@ namespace Hansoft.Jean.Behavior.AssignReleaseRiskBehavior
                             else if ((EHPMTaskRisk)item.Risk.Value == EHPMTaskRisk.Medium)
                                 iind = Math.Max(2, index);
                         }
-                        item.SetCustomColumnValue(trackingColumn, riskValue[iind]);
+                        item.SetCustomColumnValue(actualTrackingColumn, riskValue[iind]);
                     }
                 }
                 else
-                    item.SetCustomColumnValue(trackingColumn, riskValue[index]);
+                    item.SetCustomColumnValue(actualTrackingColumn, riskValue[index]);
             }
         }
 
